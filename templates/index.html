@@ -264,6 +264,10 @@
             <div class="ai-modal-progress" id="aiModalProgress">
                 <span id="aiModalProgressText">连接中...</span>
             </div>
+            <div class="ai-modal-actions" id="aiModalActions" style="display:none;">
+                <button class="btn-action primary ai-run-btn" id="btnRunAIAnalysis" onclick="startAIAnalysisStream()">🚀 开始AI深度分析</button>
+                <span class="ai-modal-hint">AI解读由大模型生成，推理模型耗时约1-5分钟，期间请勿关闭窗口</span>
+            </div>
             <div class="modal-body" id="aiModalBody">
                 <div class="ai-modal-scores" id="aiModalScores" style="display:none;"></div>
                 <div class="ai-modal-content" id="aiModalContent"></div>

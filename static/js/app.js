@@ -1017,29 +1017,109 @@ function renderAIRecommendations(el, list) {
     }).join('');
 }
 
-// ========== AI深度分析弹窗（SSE流式） ==========
+// ========== AI深度分析弹窗（快速评分 + 手动触发AI流式） ==========
 let aiModalStreamAborted = false;
+let aiCurrent = { code: '', name: '', market: 'a' };
+
+function renderScoreCards(data) {
+    const el = document.getElementById('aiModalScores');
+    if (!el || !data) return;
+    el.style.display = 'grid';
+    const gradeClass = `ai-grade-${data.grade || 'C'}`;
+    el.innerHTML = `
+        <div class="ai-score-card"><div class="as-label">综合评分</div>
+            <div class="as-value" style="color:var(--accent);">${data.total}</div>
+            <div class="as-sub">${data.grade || ''}级${data.grade_label ? ' · ' + data.grade_label : ''}${data.signal ? ' · ' + data.signal : ''}</div></div>
+        <div class="ai-score-card"><div class="as-label">技术面</div>
+            <div class="as-value" style="color:#58a6ff;">${data.tech}</div></div>
+        <div class="ai-score-card"><div class="as-label">基本面</div>
+            <div class="as-value" style="color:#3fb950;">${data.fund}</div></div>
+        <div class="ai-score-card"><div class="as-label">情绪面</div>
+            <div class="as-value" style="color:#d29922;">${data.sent}</div></div>`;
+}
 
 async function openAIAnalysis(code, name, market) {
     market = market || aiMarket || 'a';
+    aiCurrent = { code, name, market };
+    aiModalStreamAborted = false;
+
     const modal = document.getElementById('aiModal');
     const title = document.getElementById('aiModalTitle');
-    const body = document.getElementById('aiModalBody');
+    const scoresEl = document.getElementById('aiModalScores');
+    const contentEl = document.getElementById('aiModalContent');
+    const progressEl = document.getElementById('aiModalProgress');
+    const progressText = document.getElementById('aiModalProgressText');
+    const actionsEl = document.getElementById('aiModalActions');
+    const btnRun = document.getElementById('btnRunAIAnalysis');
+
+    title.textContent = `${name} (${code}) - 综合评分`;
+    scoresEl.style.display = 'none';
+    scoresEl.innerHTML = '';
+    contentEl.innerHTML = '<div class="loading">正在计算三维度评分...</div>';
+    progressEl.classList.remove('done');
+    progressEl.innerHTML = '<span class="spinner"></span><span id="aiModalProgressText">快速评分中（不调用AI）...</span>';
+    actionsEl.style.display = 'none';
+    btnRun.disabled = false;
+    btnRun.textContent = '🚀 开始AI深度分析';
+    modal.classList.add('active');
+
+    // 第一步：快速规则引擎评分（use_ai=0，秒级返回，不调用AI）
+    try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 90000);
+        const resp = await fetch(API.aiStockAnalysis(code, name, 0, market), { signal: ctrl.signal });
+        clearTimeout(timer);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error || '评分失败');
+
+        const r = data.data;
+        renderScoreCards({
+            total: r.comprehensive_score, grade: r.grade, grade_label: r.grade_label,
+            signal: r.signal, tech: r.scores.tech, fund: r.scores.fund, sent: r.scores.sent
+        });
+        progressEl.classList.add('done');
+        progressEl.innerHTML = `<span>信号: ${r.signal}（规则引擎评分完成）</span>`;
+        const ai = r.ai || {};
+        contentEl.innerHTML = ai.content || '<div class="loading">暂无评分数据</div>';
+        actionsEl.style.display = 'flex';
+    } catch (e) {
+        progressEl.classList.add('done');
+        progressEl.innerHTML = '<span>❌ 评分失败，仍可尝试AI深度分析</span>';
+        contentEl.innerHTML = '<div class="loading">快速评分失败，可点击下方按钮直接发起AI深度分析</div>';
+        actionsEl.style.display = 'flex';
+        console.error(e);
+    }
+}
+
+// 第二步：用户手动点击「开始AI深度分析」后，才发起SSE流式调用
+function startAIAnalysisStream() {
+    const { code, name, market } = aiCurrent;
+    if (!code || aiModalStreamAborted) return;
+    const actionsEl = document.getElementById('aiModalActions');
+    const btnRun = document.getElementById('btnRunAIAnalysis');
+    btnRun.disabled = true;
+    btnRun.textContent = '⏳ AI解读中...';
+    actionsEl.style.display = 'none';
+
     const scoresEl = document.getElementById('aiModalScores');
     const contentEl = document.getElementById('aiModalContent');
     const progressEl = document.getElementById('aiModalProgress');
     const progressText = document.getElementById('aiModalProgressText');
 
-    title.textContent = `${name} (${code}) - AI深度解读`;
-    scoresEl.style.display = 'none';
-    scoresEl.innerHTML = '';
     contentEl.innerHTML = '<div class="loading">AI正在生成深度解读...</div>';
     progressEl.classList.remove('done');
     progressEl.innerHTML = '<span class="spinner"></span><span id="aiModalProgressText">连接中...</span>';
-    modal.classList.add('active');
 
-    aiModalStreamAborted = false;
+    streamAIAnalysis(code, name, market, scoresEl, contentEl, progressEl, progressText).then(() => {
+        if (aiModalStreamAborted) return;
+        btnRun.disabled = false;
+        btnRun.textContent = '🔄 重新AI深度分析';
+        actionsEl.style.display = 'flex';
+    });
+}
 
+async function streamAIAnalysis(code, name, market, scoresEl, contentEl, progressEl, progressText) {
     try {
         const resp = await fetch(API.aiStream(code, name, market));
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -1092,18 +1172,10 @@ function handleAIStreamEvent(event, scoresEl, contentEl, progressEl, progressTex
             progressText.textContent = data.msg || '';
             break;
         case 'scores_update':
-            scoresEl.style.display = 'grid';
-            const gradeClass = `ai-grade-${data.grade || 'C'}`;
-            scoresEl.innerHTML = `
-                <div class="ai-score-card"><div class="as-label">综合评分</div>
-                    <div class="as-value" style="color:var(--accent);">${data.total}</div>
-                    <div class="as-sub">${data.grade}级 · ${data.grade_label}</div></div>
-                <div class="ai-score-card"><div class="as-label">技术面</div>
-                    <div class="as-value" style="color:#58a6ff;">${data.tech}</div></div>
-                <div class="ai-score-card"><div class="as-label">基本面</div>
-                    <div class="as-value" style="color:#3fb950;">${data.fund}</div></div>
-                <div class="ai-score-card"><div class="as-label">情绪面</div>
-                    <div class="as-value" style="color:#d29922;">${data.sent}</div></div>`;
+            renderScoreCards({
+                total: data.total, grade: data.grade, grade_label: data.grade_label,
+                tech: data.tech, fund: data.fund, sent: data.sent
+            });
             break;
         case 'ai_stream':
             if (contentEl.innerHTML === '<div class="loading">AI正在生成深度解读...</div>') {
@@ -1125,6 +1197,13 @@ function handleAIStreamEvent(event, scoresEl, contentEl, progressEl, progressTex
 function closeAIModal() {
     aiModalStreamAborted = true;
     document.getElementById('aiModal').classList.remove('active');
+    const btnRun = document.getElementById('btnRunAIAnalysis');
+    if (btnRun) {
+        btnRun.disabled = false;
+        btnRun.textContent = '🚀 开始AI深度分析';
+    }
+    const actionsEl = document.getElementById('aiModalActions');
+    if (actionsEl) actionsEl.style.display = 'none';
 }
 
 document.getElementById('aiModal').addEventListener('click', (e) => {

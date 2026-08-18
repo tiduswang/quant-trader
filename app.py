@@ -371,6 +371,27 @@ def ai_stock_analysis(code):
         market = request.args.get('market', 'a')
         use_ai = request.args.get('ai', '1') != '0'
         result = ai_recommender.analyze_stock(code, name, market=market, use_ai=use_ai)
+        # use_ai=0（快速评分）时也附带规则引擎解读，供前端详情页直接展示
+        if not use_ai:
+            tech = result.get('technical')
+            fund = result.get('fundamental')
+            sent = result.get('sentiment')
+            comp = {
+                'total': result['comprehensive_score'],
+                'grade': result['grade'],
+                'grade_label': result['grade_label'],
+                'tech': result['scores']['tech'],
+                'fund': result['scores']['fund'],
+                'sent': result['scores']['sent'],
+                'signal': result['signal'],
+                'signal_type': result['signal_type']
+            }
+            result['ai'] = {
+                'available': False,
+                'content': ai_recommender.generate_rule_interpretation(
+                    code, name, tech, fund, sent, comp, market),
+                'model': '规则引擎'
+            }
         return jsonify({'success': True, 'data': result})
     except Exception as e:
         logger.error(f"AI个股分析失败({code}): {e}", exc_info=True)
