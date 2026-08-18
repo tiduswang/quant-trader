@@ -703,6 +703,99 @@ main { padding: 20px 24px; max-width: 1600px; margin: 0 auto; }
 
 .ai-market-desc { font-size: 12px; color: var(--text-secondary); margin-left: auto; }
 
+/* 选股筛选条件栏 */
+.ai-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.ai-filter-input {
+    flex: 1;
+    min-width: 180px;
+    max-width: 260px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.ai-filter-input:focus { border-color: var(--accent); }
+
+.ai-filter-min {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.ai-filter-min input {
+    width: 64px;
+    padding: 8px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: center;
+    outline: none;
+}
+
+.ai-filter-min input:focus { border-color: var(--accent); }
+
+.ai-filter-tip { font-size: 12px; color: var(--text-secondary); }
+
+/* 扫描进度条 */
+.ai-progress-wrap {
+    padding: 12px 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    margin-bottom: 16px;
+}
+
+.ai-progress-msg {
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    min-height: 18px;
+}
+
+.ai-progress-track {
+    height: 10px;
+    border-radius: 5px;
+    background: var(--border-color);
+    overflow: hidden;
+}
+
+.ai-progress-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 5px;
+    background: linear-gradient(90deg, var(--accent), var(--purple));
+    transition: width 0.3s ease;
+}
+
+.ai-progress-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+}
+
 .ai-market-tag {
     font-size: 11px;
     padding: 1px 6px;

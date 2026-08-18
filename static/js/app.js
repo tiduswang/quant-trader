@@ -16,8 +16,15 @@ const API = {
     aiConfig: '/api/ai/config',
     aiProviders: '/api/ai/providers',
     aiMarkets: '/api/ai/markets',
+    aiBoards: '/api/ai/boards',
     aiModels: (baseUrl) => `/api/ai/models?base_url=${encodeURIComponent(baseUrl)}`,
     aiRecommendations: (max, ai, market) => `/api/ai/recommendations?max=${max}&ai=${ai}&market=${market}`,
+    aiRecommendStream: (params) => {
+        const p = new URLSearchParams();
+        Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') p.set(k, v); });
+        p.set('stream', '1');
+        return `/api/ai/recommendations?${p.toString()}`;
+    },
     aiStockAnalysis: (code, name, ai, market) => `/api/ai/stock/${code}/analysis?name=${encodeURIComponent(name)}&ai=${ai}&market=${market}`,
     aiStream: (code, name, market) => `/api/ai/stream/${code}?name=${encodeURIComponent(name)}&market=${market}`,
     aiBacktest: (code, name) => `/api/ai/backtest?code=${code}&name=${encodeURIComponent(name)}`
@@ -669,6 +676,8 @@ loadRecommendations();
 let aiScanning = false;
 let aiMarket = 'a';           // 当前AI选股市场 a/etf/hk
 let aiMarketInfo = null;      // 当前市场信息
+let aiBoardList = [];         // 行业板块列表缓存
+let aiProgressState = { pct: 0, elapsed: 0 };  // 进度条状态（供时间预估）
 
 // ========== AI状态与初始化 ==========
 async function loadAIStatus() {
@@ -732,6 +741,7 @@ async function switchAIMarket(market) {
         t.classList.toggle('active', t.dataset.market === market);
     });
     updateMarketDesc(aiMarketInfo);
+    toggleAIBoardVisibility();
     document.getElementById('aiCacheTag').style.display = 'none';
 
     const el = document.getElementById('aiRecommendList');
@@ -767,10 +777,32 @@ function initAIView() {
     loadAIStatus();
     loadAIMarkets();
     loadAIQuickPool();
+    loadAIBoards();
+    bindAIFilterMutex();
+    toggleAIBoardVisibility();
 }
 
 // ========== AI推荐列表 ==========
+function readAIFilters() {
+    const g = id => document.getElementById(id);
+    const board = (g('aiBoardInput')?.value || '').trim();
+    const codes = (g('aiCodesInput')?.value || '').trim();
+    const aiMin = g('aiMinScore')?.value || '';
+    return { board, codes, aiMin };
+}
+
 async function loadAIRecommendations(force) {
+    const filters = readAIFilters();
+    const hasFilter = !!(filters.board || filters.codes);
+    // 带筛选条件 或 强制重新扫描 → SSE 流式（带进度条）；否则走缓存 JSON
+    if (force || hasFilter) {
+        return runAIScanStream(filters);
+    }
+    return loadAICached();
+}
+
+// ---------- 缓存模式（无筛选时刷新缓存用） ----------
+async function loadAICached() {
     if (aiScanning) return;
     aiScanning = true;
     const btn = document.getElementById('btnAiScan');
@@ -778,14 +810,10 @@ async function loadAIRecommendations(force) {
     btn.textContent = '⏳ 扫描中...';
 
     const el = document.getElementById('aiRecommendList');
-    const marketName = aiMarketInfo ? aiMarketInfo.name : (aiMarket === 'a' ? 'A股' : aiMarket.toUpperCase());
-    if (force) {
-        el.innerHTML = `<div class="loading">${marketName}AI综合扫描中（技术面+基本面+情绪面），约需10-60秒...</div>`;
-    }
     document.getElementById('aiCacheTag').style.display = 'none';
 
     try {
-        const data = await fetchJSON(API.aiRecommendations(12, force ? 1 : 0, aiMarket), 120000);
+        const data = await fetchJSON(API.aiRecommendations(12, 0, aiMarket), 120000);
         if (!data.success) {
             el.innerHTML = '<div class="loading">AI选股失败</div>';
             return;
@@ -802,6 +830,150 @@ async function loadAIRecommendations(force) {
         btn.disabled = false;
         btn.textContent = '🚀 开始AI选股';
     }
+}
+
+// ---------- 流式模式（SSE，带筛选或强制扫描） ----------
+async function runAIScanStream(filters) {
+    if (aiScanning) return;
+    aiScanning = true;
+    const btn = document.getElementById('btnAiScan');
+    btn.disabled = true;
+    btn.textContent = '⏳ 扫描中...';
+
+    const el = document.getElementById('aiRecommendList');
+    document.getElementById('aiCacheTag').style.display = 'none';
+    el.innerHTML = '<div class="loading" id="aiLoading"></div>';
+    showAIProgress();
+    setAIProgress(3, '正在准备扫描...', 0);
+
+    const params = { max: 12, ai: 1, market: aiMarket };
+    if (filters.codes) params.codes = filters.codes;
+    if (filters.board) params.board = filters.board;
+    if (filters.aiMin !== '') params.ai_min = filters.aiMin;
+
+    try {
+        const doneEv = await streamAIRecommendations(params);
+        hideAIProgress();
+        renderAIRecommendations(el, doneEv.data || []);
+    } catch (e) {
+        hideAIProgress();
+        el.innerHTML = `<div class="loading">${e.message || '扫描失败，请稍后重试'}</div>`;
+        console.error(e);
+    } finally {
+        aiScanning = false;
+        btn.disabled = false;
+        btn.textContent = '🚀 开始AI选股';
+    }
+}
+
+// ---------- SSE 流式请求（解析 progress/done/error 事件） ----------
+function streamAIRecommendations(params) {
+    return new Promise((resolve, reject) => {
+        fetch(API.aiRecommendStream(params)).then(resp => {
+            if (!resp.ok || !resp.body) {
+                reject(new Error(`HTTP ${resp.status}`));
+                return;
+            }
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+
+            const pump = () => reader.read().then(({ done, value }) => {
+                if (done) return;
+                buf += decoder.decode(value, { stream: true });
+                const lines = buf.split('\n');
+                buf = lines.pop();
+                for (const line of lines) {
+                    const t = line.trim();
+                    if (!t.startsWith('data:')) continue;
+                    let ev;
+                    try { ev = JSON.parse(t.slice(5)); } catch (_) { continue; }
+                    if (ev.type === 'progress') onScanProgress(ev);
+                    else if (ev.type === 'done') { resolve(ev); return; }
+                    else if (ev.type === 'error') { reject(new Error(ev.error || '扫描失败')); return; }
+                }
+                pump();
+            }).catch(err => reject(err));
+            pump();
+        }).catch(err => reject(err));
+    });
+}
+
+// ---------- 进度条 ----------
+const AI_STAGE_LABELS = { quotes: '拉取行情', score: '评分', ai: 'AI深度解读' };
+
+function showAIProgress() {
+    document.getElementById('aiProgressWrap').style.display = '';
+}
+function hideAIProgress() {
+    document.getElementById('aiProgressWrap').style.display = 'none';
+}
+
+function setAIProgress(pct, message, elapsed) {
+    aiProgressState = { pct, elapsed };
+    document.getElementById('aiProgressBar').style.width = pct + '%';
+    document.getElementById('aiProgressMsg').textContent = message;
+    const stats = document.getElementById('aiProgressStats');
+    if (elapsed == null) {
+        stats.textContent = '';
+        return;
+    }
+    let etaText = '计算中...';
+    if (pct >= 3) {
+        const total = elapsed / (pct / 100);
+        const remain = total - elapsed;
+        etaText = remain > 0 ? `约 ${Math.round(remain)}s` : '即将完成';
+    }
+    stats.textContent = `已用 ${Math.round(elapsed)}s · 预估剩余 ${etaText}`;
+}
+
+function onScanProgress(ev) {
+    let pct = 5;
+    if (ev.stage === 'quotes') {
+        pct = 5;
+    } else if (ev.stage === 'score') {
+        pct = ev.total > 0 ? (ev.done / ev.total) * 55 + 5 : 5;
+    } else if (ev.stage === 'ai') {
+        pct = ev.total > 0 ? (ev.done / ev.total) * 35 + 60 : 60;
+    }
+    const label = AI_STAGE_LABELS[ev.stage] || ev.stage || '处理';
+    setAIProgress(pct, `${label}：${ev.message || ''}`, ev.elapsed);
+}
+
+// ---------- 行业板块 ----------
+async function loadAIBoards() {
+    const tip = document.getElementById('aiFilterTip');
+    try {
+        const data = await fetchJSON(API.aiBoards);
+        if (!data.success || !data.data) throw new Error('load failed');
+        aiBoardList = data.data;
+        const dl = document.getElementById('aiBoardList');
+        dl.innerHTML = aiBoardList.map(b => `<option value="${b}"></option>`).join('');
+        if (tip) tip.textContent = `已加载 ${aiBoardList.length} 个行业板块`;
+    } catch (e) {
+        if (tip) tip.textContent = '板块列表加载失败（数据源可能暂时不可用）';
+        console.error('板块列表加载失败:', e);
+    }
+}
+
+function bindAIFilterMutex() {
+    const boardInput = document.getElementById('aiBoardInput');
+    const codesInput = document.getElementById('aiCodesInput');
+    if (!boardInput || !codesInput) return;
+    boardInput.addEventListener('input', () => {
+        if (boardInput.value.trim()) codesInput.value = '';
+    });
+    codesInput.addEventListener('input', () => {
+        if (codesInput.value.trim()) boardInput.value = '';
+    });
+}
+
+function toggleAIBoardVisibility() {
+    const isA = aiMarket === 'a';
+    const boardInput = document.getElementById('aiBoardInput');
+    const btn = document.getElementById('btnRefreshBoards');
+    if (boardInput) boardInput.style.display = isA ? '' : 'none';
+    if (btn) btn.style.display = isA ? '' : 'none';
 }
 
 function renderAIRecommendations(el, list) {

@@ -399,51 +399,89 @@ class AIRecommendationEngine:
             'ai': ai_result
         }
 
-    def scan_market(self, max_stocks=20, use_ai=False, market='a'):
+    def scan_market(self, max_stocks=12, use_ai=False, market='a', codes=None,
+                    board=None, ai_min_score=70, progress=None):
         """
         扫描市场生成AI推荐列表
-        use_ai=True 时仅对评分最高的前3只调用AI深度解读（避免全量调用耗时过长）
+        use_ai=True 时仅对综合评分 >= ai_min_score 的股票调用AI深度解读
+        codes: 指定股票代码列表（优先于此模式，与 board 互斥）
+        board: 行业板块名（如'半导体'），扫描该板块成分股
+        progress: 进度回调 progress(stage, done, total, message)
+                  stage: 'quotes'=拉行情 'score'=评分 'ai'=AI解读
         market: a=沪深A股, etf=场内ETF, hk=港股
         """
-        from data_fetcher import DataFetcher
         fetcher = self.fetcher
 
-        # 获取候选股票
-        all_quotes = fetcher.get_realtime_quotes(market=market)
-        if not all_quotes:
-            return []
+        # ---------- 1. 生成候选股票 ----------
+        if codes:
+            quotes = fetcher.get_realtime_quotes(codes, market=market)
+            if not quotes:
+                return []
+            candidates = quotes[:max_stocks]
+            if progress:
+                progress('quotes', len(candidates), len(candidates),
+                         f'已获取 {len(candidates)} 只指定股票的行情')
+        elif board:
+            from data_fetcher import get_board_stocks
+            stocks = get_board_stocks(board)
+            if not stocks:
+                logger.warning(f"板块[{board}]无成分股数据")
+                return []
+            codes_in_board = [s['code'] for s in stocks]
+            quotes = fetcher.get_realtime_quotes(codes_in_board, market=market)
+            if progress:
+                progress('quotes', 1, 1, f'板块[{board}]共 {len(stocks)} 只成分股，'
+                                         f'已获取 {len(quotes)} 只行情')
+            # 板块行情较多时按涨跌幅排序取前 max_stocks 只
+            valid = [q for q in quotes if -10 < q.get('pct_change', 0) < 11]
+            valid.sort(key=lambda x: x.get('pct_change', 0), reverse=True)
+            candidates = valid[:max_stocks]
+            if progress:
+                progress('quotes', len(candidates), len(candidates),
+                         f'板块[{board}]筛选出涨跌幅前 {len(candidates)} 只候选')
+        else:
+            all_quotes = fetcher.get_realtime_quotes(market=market)
+            if not all_quotes:
+                return []
+            valid = [q for q in all_quotes if -10 < q.get('pct_change', 0) < 11]
+            top_gainers = sorted(valid, key=lambda x: x.get('pct_change', 0), reverse=True)[:max_stocks // 2]
+            top_volume = sorted(valid, key=lambda x: x.get('amount', 0), reverse=True)[:max_stocks // 2]
+            candidates = []
+            seen = set()
+            for s in top_gainers + top_volume:
+                if s['code'] not in seen:
+                    candidates.append(s)
+                    seen.add(s['code'])
+            candidates = candidates[:max_stocks]
+            if progress:
+                progress('quotes', len(candidates), len(candidates),
+                         f'已获取全市场行情，筛出 {len(candidates)} 只候选')
 
-        valid = [q for q in all_quotes if -10 < q.get('pct_change', 0) < 11]
-        top_gainers = sorted(valid, key=lambda x: x.get('pct_change', 0), reverse=True)[:max_stocks // 2]
-        top_volume = sorted(valid, key=lambda x: x.get('amount', 0), reverse=True)[:max_stocks // 2]
-
-        candidates = []
-        seen = set()
-        for s in top_gainers + top_volume:
-            if s['code'] not in seen:
-                candidates.append(s)
-                seen.add(s['code'])
-        candidates = candidates[:max_stocks]
-
-        # 第一阶段：全量评分（不调用AI，速度快）
+        # ---------- 2. 第一阶段：全量评分（不调用AI，速度快） ----------
         results = []
-        for stock in candidates:
+        total = len(candidates)
+        for idx, stock in enumerate(candidates):
             try:
                 result = self.analyze_stock(stock['code'], stock.get('name', ''),
                                             market=market, use_ai=False)
                 results.append(result)
             except Exception as e:
                 logger.error(f"分析{stock['code']}失败: {e}")
+            if progress:
+                done = idx + 1
+                name = stock.get('name', stock['code'])
+                progress('score', done, total, f'评分中 ({done}/{total}) {name}')
             time.sleep(0.2)
 
         results.sort(key=lambda x: x['comprehensive_score'], reverse=True)
 
-        # 第二阶段：仅对评分最高的前3只调用AI深度解读
+        # ---------- 3. 第二阶段：对综合评分 >= ai_min_score 的调用AI深度解读 ----------
         if use_ai and results:
-            ai_top = min(3, len(results))
+            ai_targets = [r for r in results if r['comprehensive_score'] >= ai_min_score]
+            ai_total = len(ai_targets)
             logger.info(f"市场扫描(market={market})评分完成共{len(results)}只，"
-                        f"对评分最高的{ai_top}只进行AI深度解读...")
-            for r in results[:ai_top]:
+                        f"综合评分>={ai_min_score}的{ai_total}只进行AI深度解读...")
+            for idx, r in enumerate(ai_targets):
                 try:
                     comp = {
                         'total': r['comprehensive_score'],
@@ -455,6 +493,10 @@ class AIRecommendationEngine:
                         'signal': r['signal'],
                         'signal_type': r['signal_type']
                     }
+                    if progress:
+                        progress('ai', idx + 1, ai_total,
+                                 f'AI解读中 ({idx + 1}/{ai_total}) {r["name"]} '
+                                 f'综合{int(r["comprehensive_score"])}分')
                     r['ai'] = self.ai_interpret(r['code'], r['name'],
                                                 r['technical'], r['fundamental'],
                                                 r['sentiment'], comp, market,
@@ -462,6 +504,8 @@ class AIRecommendationEngine:
                 except Exception as e:
                     logger.error(f"AI解读{r['code']}失败: {e}")
                     r['ai'] = None
+            if progress and ai_total == 0:
+                progress('ai', 0, 0, f'无综合评分>={ai_min_score}的股票，跳过AI深度解读')
 
         return results
 

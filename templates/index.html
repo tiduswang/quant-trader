@@ -141,6 +141,29 @@
                 <div class="ai-market-desc" id="aiMarketDesc"></div>
             </div>
 
+            <!-- 选股筛选条件 -->
+            <div class="ai-filter-bar" id="aiFilterBar">
+                <input list="aiBoardList" id="aiBoardInput" class="ai-filter-input"
+                       placeholder="🏷️ 行业板块（如 半导体）" autocomplete="off">
+                <datalist id="aiBoardList"></datalist>
+                <input id="aiCodesInput" class="ai-filter-input"
+                       placeholder="💹 指定代码（600519,000858）" autocomplete="off">
+                <div class="ai-filter-min">
+                    <span>AI深度分析 ≥</span>
+                    <input type="number" id="aiMinScore" value="70" min="0" max="100" step="1"
+                           title="综合评分达到该分数才进行AI深度解读">
+                </div>
+                <button class="btn-refresh" id="btnRefreshBoards" onclick="loadAIBoards()">🔄 板块列表</button>
+                <span class="ai-filter-tip" id="aiFilterTip"></span>
+            </div>
+
+            <!-- 扫描进度条 -->
+            <div class="ai-progress-wrap" id="aiProgressWrap" style="display:none;">
+                <div class="ai-progress-msg" id="aiProgressMsg">准备中...</div>
+                <div class="ai-progress-track"><div class="ai-progress-fill" id="aiProgressBar" style="width:0%"></div></div>
+                <div class="ai-progress-stats" id="aiProgressStats"></div>
+            </div>
+
             <div class="card">
                 <div class="card-header">
                     <h2>🧠 AI综合评分选股（技术+基本面+情绪）</h2>

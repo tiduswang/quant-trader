@@ -8,6 +8,8 @@ import logging
 import threading
 import time
 import json
+import re
+import queue
 from data_fetcher import DataFetcher
 from analysis_engine import AnalysisEngine
 from recommendation_engine import RecommendationEngine
@@ -348,6 +350,19 @@ def ai_markets():
     return jsonify({'success': True, 'data': data})
 
 
+@app.route('/api/ai/boards')
+def ai_boards():
+    """A股行业板块列表（用于板块筛选选股）"""
+    from data_fetcher import get_industry_boards
+    try:
+        boards = get_industry_boards()
+        return jsonify({'success': True, 'count': len(boards),
+                        'data': [b['name'] for b in boards]})
+    except Exception as e:
+        logger.error(f"行业板块列表获取失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/ai/stock/<code>/analysis')
 def ai_stock_analysis(code):
     """AI综合个股分析"""
@@ -362,42 +377,114 @@ def ai_stock_analysis(code):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _parse_codes(codes_raw):
+    """解析逗号/空格分隔的股票代码列表"""
+    if not codes_raw or not codes_raw.strip():
+        return None
+    codes = []
+    for c in re.split(r'[,，;\s]+', codes_raw.strip()):
+        c = c.strip()
+        if c and c.isdigit() and len(c) == 6:
+            codes.append(c)
+    codes = list(dict.fromkeys(codes))[:50]  # 去重，最多50只
+    return codes if codes else None
+
+
+def _build_ai_summary(results, market):
+    """精简AI选股结果（避免过大数据量）"""
+    summary = []
+    for r in results:
+        summary.append({
+            'code': r['code'],
+            'name': r['name'],
+            'market': r.get('market', market),
+            'market_name': r.get('market_name', market),
+            'comprehensive_score': r['comprehensive_score'],
+            'grade': r['grade'],
+            'grade_label': r['grade_label'],
+            'signal': r['signal'],
+            'signal_type': r['signal_type'],
+            'scores': r['scores'],
+            'ai_available': r['ai'].get('available', False) if r.get('ai') else False,
+            'fund': (r['fundamental'] or {}).get('data', {}) or {},
+            'trend': (r['technical'] or {}).get('analysis', {}).get('trend', '') if r.get('technical') else ''
+        })
+    return summary
+
+
 @app.route('/api/ai/recommendations')
 def ai_recommendations():
-    """AI智能选股推荐（带缓存，10分钟）"""
+    """AI智能选股推荐（带缓存，10分钟）
+    支持筛选：codes=指定代码(逗号/空格分隔)、board=行业板块名、ai_min=AI解读最低综合分
+    stream=1 时返回 SSE 进度事件流（带筛选条件时建议使用）
+    """
     market = request.args.get('market', 'a')
-    market_cache_key = f"{market}_data"
+    use_ai = request.args.get('ai', '0') == '1'
+    max_stocks = int(request.args.get('max', 12))
+    ai_min_score = int(request.args.get('ai_min', 70))
+    stream = request.args.get('stream', '0') == '1'
+
+    codes = _parse_codes(request.args.get('codes', ''))
+    if request.args.get('codes', '').strip() and not codes:
+        return jsonify({'success': False, 'error': '未识别到有效的股票代码（需6位数字）'}), 400
+    board = request.args.get('board', '').strip() or None
+
+    # ---------- SSE 流式模式（带进度） ----------
+    if stream:
+        def generate():
+            q = queue.Queue()
+            start_time = time.time()
+
+            def progress(stage, done, total, message):
+                q.put({
+                    'type': 'progress', 'stage': stage,
+                    'done': done, 'total': total, 'message': message,
+                    'elapsed': round(time.time() - start_time, 1),
+                })
+
+            def runner():
+                try:
+                    results = ai_recommender.scan_market(
+                        max_stocks=max_stocks, use_ai=use_ai, market=market,
+                        codes=codes, board=board, ai_min_score=ai_min_score,
+                        progress=progress)
+                    summary = _build_ai_summary(results, market)
+                    q.put({'type': 'done', 'data': summary, 'count': len(summary),
+                           'market': market, 'ai_used': use_ai,
+                           'elapsed': round(time.time() - start_time, 1)})
+                except Exception as e:
+                    logger.error(f"AI选股失败: {e}", exc_info=True)
+                    q.put({'type': 'error', 'error': str(e)})
+
+            threading.Thread(target=runner, daemon=True).start()
+            yield f"data: {json.dumps({'type': 'start', 'market': market, 'ai_used': use_ai, 'ai_min': ai_min_score}, ensure_ascii=False)}\n\n"
+            while True:
+                ev = q.get()
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                if ev['type'] in ('done', 'error'):
+                    break
+
+        return Response(generate(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    # ---------- 非流式模式（普通市场扫描，带缓存） ----------
     global _ai_recommend_cache
+    cache_key = f"{market}_data_{ai_min_score}"
     now = time.time()
-    if _ai_recommend_cache.get(market_cache_key) and (now - _ai_recommend_cache.get('time', 0)) < 600:
-        return jsonify({'success': True, 'data': _ai_recommend_cache[market_cache_key],
+    if not codes and not board and _ai_recommend_cache.get(cache_key) and \
+            (now - _ai_recommend_cache.get('time', 0)) < 600:
+        return jsonify({'success': True, 'data': _ai_recommend_cache[cache_key],
                        'cached': True, 'market': market})
 
     try:
-        use_ai = request.args.get('ai', '0') == '1'
-        max_stocks = int(request.args.get('max', 12))
-        logger.info(f"开始AI智能选股扫描 (market={market}, max={max_stocks}, ai={use_ai})...")
-        results = ai_recommender.scan_market(max_stocks=max_stocks, use_ai=use_ai, market=market)
-        # 精简返回，避免过大数据量
-        summary = []
-        for r in results:
-            summary.append({
-                'code': r['code'],
-                'name': r['name'],
-                'market': r.get('market', market),
-                'market_name': r.get('market_name', market),
-                'comprehensive_score': r['comprehensive_score'],
-                'grade': r['grade'],
-                'grade_label': r['grade_label'],
-                'signal': r['signal'],
-                'signal_type': r['signal_type'],
-                'scores': r['scores'],
-                'ai_available': r['ai'].get('available', False) if r.get('ai') else False,
-                'fund': (r['fundamental'] or {}).get('data', {}) or {},
-                'trend': (r['technical'] or {}).get('analysis', {}).get('trend', '') if r.get('technical') else ''
-            })
-        _ai_recommend_cache[market_cache_key] = summary
-        _ai_recommend_cache['time'] = now
+        logger.info(f"开始AI智能选股扫描 (market={market}, max={max_stocks}, ai={use_ai}, "
+                    f"codes={len(codes) if codes else '无'}, board={board or '无'}, ai_min={ai_min_score})...")
+        results = ai_recommender.scan_market(max_stocks=max_stocks, use_ai=use_ai, market=market,
+                                             codes=codes, board=board, ai_min_score=ai_min_score)
+        summary = _build_ai_summary(results, market)
+        if not codes and not board:
+            _ai_recommend_cache[cache_key] = summary
+            _ai_recommend_cache['time'] = now
         return jsonify({'success': True, 'data': summary, 'cached': False,
                        'count': len(summary), 'ai_used': use_ai, 'market': market})
     except Exception as e:

@@ -241,6 +241,70 @@ def get_search_index():
     return _SEARCH_INDEX
 
 
+# ---------- 行业板块（东方财富，akshare） ----------
+
+_BOARDS_CACHE = None
+_BOARDS_TIME = 0
+_BOARDS_TTL = 24 * 3600        # 板块列表 24 小时缓存
+_BOARD_STOCKS_CACHE = {}
+_BOARD_STOCKS_TTL = 3600       # 板块成分股 1 小时缓存
+
+
+def get_industry_boards():
+    """获取A股行业板块列表（带24小时缓存）
+    返回: [{'name': '半导体', 'code': 'BK1036'}, ...]
+    失败时返回 []，不阻塞主流程
+    """
+    global _BOARDS_CACHE, _BOARDS_TIME
+    if _BOARDS_CACHE is not None and (time.time() - _BOARDS_TIME) < _BOARDS_TTL:
+        return _BOARDS_CACHE
+    boards = []
+    try:
+        df = _retry_call(ak.stock_board_industry_name_em, retries=2, delay=2.0)
+        for _, row in df.iterrows():
+            name = str(row.get('板块名称', '')).strip()
+            code = str(row.get('板块代码', '')).strip()
+            if name and code:
+                boards.append({'name': name, 'code': code})
+    except Exception as e:
+        logger.warning(f"行业板块列表获取失败: {e}")
+    _BOARDS_CACHE = boards
+    _BOARDS_TIME = time.time()
+    logger.info(f"行业板块列表已加载: {len(boards)} 个")
+    return boards
+
+
+def get_board_stocks(board_name, max_retries=3):
+    """获取行业板块成分股（带1小时缓存）
+    返回: [{'code': '600519', 'name': '贵州茅台', 'market': 'a'}, ...]
+    失败时返回 []
+    """
+    if not board_name:
+        return []
+    key = board_name.strip()
+    if key in _BOARD_STOCKS_CACHE:
+        cached, cached_time = _BOARD_STOCKS_CACHE[key]
+        if time.time() - cached_time < _BOARD_STOCKS_TTL:
+            return cached
+    stocks = []
+    for attempt in range(max_retries):
+        try:
+            df = ak.stock_board_industry_cons_em(symbol=key)
+            for _, row in df.iterrows():
+                code = str(row.get('代码', '')).strip()
+                name = str(row.get('名称', '')).strip()
+                if code:
+                    stocks.append({'code': code, 'name': name, 'market': 'a'})
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                logger.warning(f"板块[{key}]成分股获取失败: {e}")
+            else:
+                time.sleep(3 * (attempt + 1))
+    _BOARD_STOCKS_CACHE[key] = (stocks, time.time())
+    return stocks
+
+
 def _is_sh_code(code):
     """判断是否上海市场代码：5/6/9开头（5=沪市基金/ETF）"""
     return code.startswith(('5', '6', '9'))
