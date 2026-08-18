@@ -1,0 +1,12 @@
+{
+  "ai": {
+    "enabled": true,
+    "provider": "ollama",
+    "api_key": "sk-你的API密钥",
+    "model": "deepseek-r1:14b",
+    "base_url": "http://localhost:11434/v1",
+    "temperature": 0.3,
+    "timeout": 300,
+    "max_tokens": 2000
+  }
+}

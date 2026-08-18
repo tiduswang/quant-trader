@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>量化交易分析系统</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <header class="top-bar">
+        <div class="logo">
+            <span class="logo-icon">📊</span>
+            <span class="logo-text">量化交易分析系统</span>
+        </div>
+        <nav class="nav-tabs">
+            <a class="nav-tab active" data-view="dashboard">仪表盘</a>
+            <a class="nav-tab" data-view="recommend">选股推荐</a>
+            <a class="nav-tab" data-view="ai">AI智能选股</a>
+            <a class="nav-tab" data-view="market">行情中心</a>
+            <a class="nav-tab" data-view="news">财经新闻</a>
+        </nav>
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="代码/名称/拼音首字母 (如 gzmt)" autocomplete="off">
+            <button id="searchBtn">🔍</button>
+            <div class="search-dropdown" id="searchDropdown" style="display:none;"></div>
+        </div>
+        <div class="market-status" id="marketStatus">
+            <span class="status-dot"></span>
+            <span class="status-text">加载中...</span>
+        </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <main id="mainContent">
+
+        <!-- ====== 仪表盘视图 ====== -->
+        <section class="view active" id="view-dashboard">
+            <!-- 指数概览 -->
+            <div class="index-bar" id="indexBar"></div>
+
+            <div class="dashboard-grid">
+                <!-- 左列：推荐 -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2>⭐ 量化选股推荐</h2>
+                        <button class="btn-refresh" onclick="loadRecommendations()">刷新</button>
+                    </div>
+                    <div class="card-body" id="recommendList">
+                        <div class="loading">正在扫描市场，生成推荐...</div>
+                    </div>
+                </div>
+
+                <!-- 右列：板块+热门 -->
+                <div class="right-col">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>🔥 涨幅榜 TOP10</h2>
+                        </div>
+                        <div class="card-body" id="topGainers">
+                            <div class="loading">加载中...</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>💰 成交额榜 TOP10</h2>
+                        </div>
+                        <div class="card-body" id="topVolume">
+                            <div class="loading">加载中...</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>🏭 板块行情</h2>
+                        </div>
+                        <div class="card-body" id="sectorList">
+                            <div class="loading">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== 选股推荐视图 ====== -->
+        <section class="view" id="view-recommend">
+            <div class="card">
+                <div class="card-header">
+                    <h2>🎯 量化选股推荐列表</h2>
+                    <div>
+                        <button class="btn-action" onclick="loadFullScan()">全市场扫描</button>
+                        <button class="btn-refresh" onclick="loadRecommendations()">刷新推荐</button>
+                    </div>
+                </div>
+                <div class="card-body" id="fullRecommendList">
+                    <div class="loading">点击"刷新推荐"或"全市场扫描"开始...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== AI智能选股视图 ====== -->
+        <section class="view" id="view-ai">
+            <!-- AI状态横幅 -->
+            <div class="ai-banner" id="aiBanner">
+                <div class="ai-banner-left">
+                    <span class="ai-status-icon" id="aiStatusIcon">🤖</span>
+                    <div>
+                        <div class="ai-banner-title">AI 智能选股</div>
+                        <div class="ai-banner-sub" id="aiStatusText">检测AI服务状态...</div>
+                    </div>
+                </div>
+                <div class="ai-banner-right">
+                    <button class="btn-action" onclick="openAISettings()">⚙️ 设置</button>
+                    <button class="btn-action primary" id="btnAiScan" onclick="loadAIRecommendations(true)">🚀 开始AI选股</button>
+                </div>
+            </div>
+
+            <!-- 评分权重说明 -->
+            <div class="ai-weight-bar" id="aiWeightBar">
+                <div class="weight-item" style="flex:4;">
+                    <span class="weight-label">技术面 40%</span>
+                    <div class="weight-track"><div class="weight-fill" style="width:40%;background:#58a6ff;"></div></div>
+                </div>
+                <div class="weight-item" style="flex:4;">
+                    <span class="weight-label">基本面 40%</span>
+                    <div class="weight-track"><div class="weight-fill" style="width:40%;background:#3fb950;"></div></div>
+                </div>
+                <div class="weight-item" style="flex:2;">
+                    <span class="weight-label">情绪面 20%</span>
+                    <div class="weight-track"><div class="weight-fill" style="width:20%;background:#d29922;"></div></div>
+                </div>
+            </div>
+
+            <!-- 市场切换 -->
+            <div class="ai-market-bar">
+                <div class="ai-market-tabs" id="aiMarketTabs">
+                    <div class="loading" style="padding:2px;">加载市场列表...</div>
+                </div>
+                <div class="ai-market-desc" id="aiMarketDesc"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>🧠 AI综合评分选股（技术+基本面+情绪）</h2>
+                    <div>
+                        <span class="ai-cache-tag" id="aiCacheTag" style="display:none;font-size:12px;color:var(--text-secondary);margin-right:8px;">已缓存</span>
+                        <button class="btn-refresh" onclick="openStrategyParams()">选股参数</button>
+                        <button class="btn-refresh" onclick="loadAIRecommendations(true)">重新扫描</button>
+                        <button class="btn-refresh" onclick="loadAIRecommendations(false)">刷新缓存</button>
+                    </div>
+                </div>
+                <div class="card-body" id="aiRecommendList">
+                    <div class="loading" id="aiLoading">
+                        点击「开始AI选股」扫描市场，使用三维度综合模型生成推荐列表（约需10-30秒）...
+                    </div>
+                </div>
+            </div>
+
+            <!-- 候选AI股票池（快速分析用） -->
+            <div class="card" style="margin-top:16px;">
+                <div class="card-header">
+                    <h2>🎯 快速AI分析</h2>
+                    <span style="font-size:12px;color:var(--text-secondary);">点击股票查看AI深度解读（支持流式输出）</span>
+                </div>
+                <div class="card-body">
+                    <div class="ai-quick-pool" id="aiQuickPool">
+                        <div class="loading">正在加载候选股票...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== 行情中心视图 ====== -->
+        <section class="view" id="view-market">
+            <div class="card">
+                <div class="card-header">
+                    <h2>📋 A股行情</h2>
+                    <div class="filter-bar">
+                        <input type="text" id="marketSearch" placeholder="搜索股票..." style="width:200px;padding:4px 8px;border-radius:4px;border:1px solid #333;background:#1a1a2e;color:#fff;">
+                    </div>
+                </div>
+                <div class="card-body">
+                    <table class="stock-table" id="stockTable">
+                        <thead>
+                            <tr>
+                                <th>代码</th>
+                                <th>名称</th>
+                                <th>最新价</th>
+                                <th>涨跌幅</th>
+                                <th>成交额</th>
+                                <th>换手率</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stockTableBody">
+                            <tr><td colspan="7" class="loading">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="pagination" id="pagination"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ====== 新闻视图 ====== -->
+        <section class="view" id="view-news">
+            <div class="card">
+                <div class="card-header">
+                    <h2>📰 财经新闻</h2>
+                    <button class="btn-refresh" onclick="loadMarketNews()">刷新</button>
+                </div>
+                <div class="card-body" id="newsList">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- 个股详情弹窗 -->
+    <div class="modal-overlay" id="stockModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">个股分析</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI深度分析弹窗 -->
+    <div class="modal-overlay" id="aiModal">
+        <div class="modal-content ai-modal">
+            <div class="modal-header">
+                <h2 id="aiModalTitle">AI深度解读</h2>
+                <button class="modal-close" onclick="closeAIModal()">&times;</button>
+            </div>
+            <div class="ai-modal-progress" id="aiModalProgress">
+                <span id="aiModalProgressText">连接中...</span>
+            </div>
+            <div class="modal-body" id="aiModalBody">
+                <div class="ai-modal-scores" id="aiModalScores" style="display:none;"></div>
+                <div class="ai-modal-content" id="aiModalContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI设置弹窗 -->
+    <div class="modal-overlay" id="aiSettingsModal">
+        <div class="modal-content ai-settings-modal">
+            <div class="modal-header">
+                <h2>⚙️ AI服务配置</h2>
+                <button class="modal-close" onclick="closeAISettings()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="settings-group">
+                    <label class="settings-label">服务商</label>
+                    <select id="aiProvider" class="settings-input" onchange="onProviderChange()"></select>
+                    <div class="settings-hint" id="aiProviderHint">DeepSeek/OpenAI/智谱/通义/Kimi等 OpenAI 兼容接口</div>
+                </div>
+                <div class="settings-group">
+                    <label class="settings-label">模型</label>
+                    <select id="aiModel" class="settings-input"></select>
+                </div>
+                <div class="settings-group" id="aiKeyGroup">
+                    <label class="settings-label">API Key</label>
+                    <input type="password" id="aiApiKey" class="settings-input" placeholder="输入你的 API Key">
+                    <div class="settings-hint" id="aiKeyHint"></div>
+                </div>
+                <div class="settings-group">
+                    <label class="settings-label">API地址（Base URL）</label>
+                    <input type="text" id="aiBaseUrl" class="settings-input" placeholder="https://api.deepseek.com/v1">
+                </div>
+                <div class="settings-group" style="display:flex;align-items:center;gap:10px;">
+                    <label class="settings-label" style="margin:0;">启用AI</label>
+                    <input type="checkbox" id="aiEnabled" style="width:18px;height:18px;">
+                </div>
+                <div class="settings-actions">
+                    <button class="btn-action primary" onclick="saveAISettings()">保存配置</button>
+                    <button class="btn-refresh" onclick="testAIConnection()">测试连接</button>
+                    <span class="settings-test-result" id="aiTestResult"></span>
+                </div>
+                <div class="settings-note">
+                    🔒 API Key 仅保存在本地 config.json，不会上传到任何服务器。未配置时将使用内置规则引擎分析。
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 选股参数设置弹窗 -->
+    <div class="modal-overlay" id="strategyParamsModal">
+        <div class="modal-content ai-settings-modal" style="max-height:85vh;">
+            <div class="modal-header">
+                <h2>🎚️ 选股策略参数</h2>
+                <button class="modal-close" onclick="closeStrategyParams()">&times;</button>
+            </div>
+            <div class="modal-body" style="overflow-y:auto;">
+                <div class="settings-note" style="margin-bottom:10px;">
+                    评分体系依据 stock-scanner：综合评分 = 技术面×权重 + 基本面×权重 + 情绪面×权重。修改后保存立即生效（会清空推荐缓存）。
+                </div>
+                <div id="strategyParamsForm">
+                    <div class="loading">加载参数中...</div>
+                </div>
+                <div class="settings-actions">
+                    <button class="btn-action primary" onclick="saveStrategyParams()">保存参数</button>
+                    <button class="btn-refresh" onclick="resetStrategyParams()">恢复默认</button>
+                    <span class="settings-test-result" id="strategySaveResult"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

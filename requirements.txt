@@ -1,0 +1,9 @@
+# 依赖清单（开发环境实测版本见注释，安装时取满足要求的最新版即可）
+flask>=3.0
+akshare>=1.15
+pandas>=2.2
+numpy>=1.26
+requests>=2.32
+
+# 开发环境实测版本（Python 3.13）：
+# flask==3.1.3  akshare==1.15.87  pandas==2.2.2  numpy==1.26.3  requests==2.32.3
