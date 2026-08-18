@@ -463,12 +463,33 @@ def ai_recommendations():
                     'elapsed': round(time.time() - start_time, 1),
                 })
 
+            def on_scores_ready(sorted_results):
+                """评分完成：一次性推送候选列表（前端标记为待分析）"""
+                q.put({'type': 'scores_ready',
+                       'stocks': _build_ai_summary(sorted_results, market),
+                       'total': len(sorted_results),
+                       'elapsed': round(time.time() - start_time, 1)})
+
+            def on_ai_start(r):
+                q.put({'type': 'ai_start', 'code': r['code'], 'name': r['name'],
+                       'elapsed': round(time.time() - start_time, 1)})
+
+            def on_ai_done(r):
+                """单只股票AI解读完成：立即推送，前端完成一只显示一只"""
+                stock = _build_ai_summary([r], market)[0]
+                stock['ai_content'] = (r.get('ai') or {}).get('content', '')
+                q.put({'type': 'ai_done', 'stock': stock,
+                       'elapsed': round(time.time() - start_time, 1)})
+
             def runner():
                 try:
                     results = ai_recommender.scan_market(
                         max_stocks=max_stocks, use_ai=use_ai, market=market,
                         codes=codes, board=board, ai_min_score=ai_min_score,
-                        progress=progress)
+                        progress=progress,
+                        on_scores_ready=on_scores_ready,
+                        on_ai_start=on_ai_start,
+                        on_ai_done=on_ai_done)
                     summary = _build_ai_summary(results, market)
                     q.put({'type': 'done', 'data': summary, 'count': len(summary),
                            'market': market, 'ai_used': use_ai,

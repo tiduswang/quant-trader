@@ -420,7 +420,8 @@ class AIRecommendationEngine:
         }
 
     def scan_market(self, max_stocks=12, use_ai=False, market='a', codes=None,
-                    board=None, ai_min_score=70, progress=None):
+                    board=None, ai_min_score=70, progress=None,
+                    on_scores_ready=None, on_ai_start=None, on_ai_done=None):
         """
         扫描市场生成AI推荐列表
         use_ai=True 时仅对综合评分 >= ai_min_score 的股票调用AI深度解读
@@ -428,6 +429,9 @@ class AIRecommendationEngine:
         board: 行业板块名（如'半导体'），扫描该板块成分股
         progress: 进度回调 progress(stage, done, total, message)
                   stage: 'quotes'=拉行情 'score'=评分 'ai'=AI解读
+        on_scores_ready: 评分完成回调 on_scores_ready(sorted_results)，AI解读开始前调用
+        on_ai_start: 每只股票开始AI解读回调 on_ai_start(result)
+        on_ai_done: 每只股票完成AI解读回调 on_ai_done(result)（result含ai字段）
         market: a=沪深A股, etf=场内ETF, hk=港股
         """
         fetcher = self.fetcher
@@ -501,6 +505,11 @@ class AIRecommendationEngine:
             ai_total = len(ai_targets)
             logger.info(f"市场扫描(market={market})评分完成共{len(results)}只，"
                         f"综合评分>={ai_min_score}的{ai_total}只进行AI深度解读...")
+            if on_scores_ready:
+                on_scores_ready(results)
+            if ai_total == 0:
+                if progress:
+                    progress('ai', 0, 0, f'无综合评分>={ai_min_score}的股票，跳过AI深度解读')
             for idx, r in enumerate(ai_targets):
                 try:
                     comp = {
@@ -513,6 +522,8 @@ class AIRecommendationEngine:
                         'signal': r['signal'],
                         'signal_type': r['signal_type']
                     }
+                    if on_ai_start:
+                        on_ai_start(r)
                     if progress:
                         progress('ai', idx + 1, ai_total,
                                  f'AI解读中 ({idx + 1}/{ai_total}) {r["name"]} '
@@ -521,11 +532,13 @@ class AIRecommendationEngine:
                                                 r['technical'], r['fundamental'],
                                                 r['sentiment'], comp, market,
                                                 stream=True)
+                    if on_ai_done:
+                        on_ai_done(r)
                 except Exception as e:
                     logger.error(f"AI解读{r['code']}失败: {e}")
                     r['ai'] = None
-            if progress and ai_total == 0:
-                progress('ai', 0, 0, f'无综合评分>={ai_min_score}的股票，跳过AI深度解读')
+                    if on_ai_done:
+                        on_ai_done(r)
 
         return results
 

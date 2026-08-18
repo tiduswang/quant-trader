@@ -678,6 +678,7 @@ let aiMarket = 'a';           // 当前AI选股市场 a/etf/hk
 let aiMarketInfo = null;      // 当前市场信息
 let aiBoardList = [];         // 行业板块列表缓存
 let aiProgressState = { pct: 0, elapsed: 0 };  // 进度条状态（供时间预估）
+let aiLiveStocks = null;  // AI扫描实时列表：{code,name,...,aiState:'pending'|'running'|'done'}
 
 // ========== AI状态与初始化 ==========
 async function loadAIStatus() {
@@ -836,6 +837,7 @@ async function loadAICached() {
 async function runAIScanStream(filters) {
     if (aiScanning) return;
     aiScanning = true;
+    aiLiveStocks = null;
     const btn = document.getElementById('btnAiScan');
     btn.disabled = true;
     btn.textContent = '⏳ 扫描中...';
@@ -852,11 +854,33 @@ async function runAIScanStream(filters) {
     if (filters.aiMin !== '') params.ai_min = filters.aiMin;
 
     try {
-        const doneEv = await streamAIRecommendations(params);
+        const doneEv = await streamAIRecommendations(params, {
+            // 评分完成：候选列表一次性展示，均标记为「待分析」
+            onScoresReady: (ev) => {
+                aiLiveStocks = (ev.stocks || []).map(s => Object.assign({}, s, { aiState: 'pending' }));
+                renderAILiveList(el);
+            },
+            // 开始分析某只：标记「分析中」
+            onAiStart: (ev) => {
+                if (!aiLiveStocks) return;
+                const s = aiLiveStocks.find(x => x.code === ev.code);
+                if (s) { s.aiState = 'running'; renderAILiveList(el); }
+            },
+            // 完成一只：立即展示该只结果（其余仍为分析中/待分析）
+            onAiDone: (ev) => {
+                if (!aiLiveStocks) return;
+                const s = aiLiveStocks.find(x => x.code === ev.stock.code);
+                if (s) Object.assign(s, ev.stock, { aiState: 'done' });
+                else aiLiveStocks.push(Object.assign({}, ev.stock, { aiState: 'done' }));
+                renderAILiveList(el);
+            }
+        });
         hideAIProgress();
+        aiLiveStocks = null;
         renderAIRecommendations(el, doneEv.data || []);
     } catch (e) {
         hideAIProgress();
+        aiLiveStocks = null;
         el.innerHTML = `<div class="loading">${e.message || '扫描失败，请稍后重试'}</div>`;
         console.error(e);
     } finally {
@@ -866,8 +890,15 @@ async function runAIScanStream(filters) {
     }
 }
 
+// ---------- 实时列表渲染（完成一只显示一只） ----------
+function renderAILiveList(el) {
+    if (!aiLiveStocks || aiLiveStocks.length === 0) return;
+    el.innerHTML = aiLiveStocks.map(r => renderAIRecommendItem(r, r.aiState)).join('');
+}
+
 // ---------- SSE 流式请求（解析 progress/done/error 事件） ----------
-function streamAIRecommendations(params) {
+function streamAIRecommendations(params, handlers) {
+    handlers = handlers || {};
     return new Promise((resolve, reject) => {
         fetch(API.aiRecommendStream(params)).then(resp => {
             if (!resp.ok || !resp.body) {
@@ -889,7 +920,13 @@ function streamAIRecommendations(params) {
                     let ev;
                     try { ev = JSON.parse(t.slice(5)); } catch (_) { continue; }
                     if (ev.type === 'progress') onScanProgress(ev);
-                    else if (ev.type === 'done') { resolve(ev); return; }
+                    else if (ev.type === 'scores_ready') {
+                        if (handlers.onScoresReady) handlers.onScoresReady(ev);
+                    } else if (ev.type === 'ai_start') {
+                        if (handlers.onAiStart) handlers.onAiStart(ev);
+                    } else if (ev.type === 'ai_done') {
+                        if (handlers.onAiDone) handlers.onAiDone(ev);
+                    } else if (ev.type === 'done') { resolve(ev); return; }
                     else if (ev.type === 'error') { reject(new Error(ev.error || '扫描失败')); return; }
                 }
                 pump();
@@ -981,40 +1018,52 @@ function renderAIRecommendations(el, list) {
         el.innerHTML = '<div class="loading">暂无推荐，请点击「开始AI选股」</div>';
         return;
     }
-    el.innerHTML = list.map(r => {
-        const gradeClass = `ai-grade-${r.grade || 'C'}`;
-        const signalClass = r.signal_type === 'buy' ? 'signal-buy' : r.signal_type === 'sell' ? 'signal-sell' : 'signal-hold';
-        const dimColors = { tech: '#58a6ff', fund: '#3fb950', sent: '#d29922' };
-        const fund = r.fund || {};
+    el.innerHTML = list.map(r => renderAIRecommendItem(r)).join('');
+}
+
+// 单个推荐卡片（liveState: 可选 'pending'/'running'/'done'，AI扫描实时模式使用）
+function renderAIRecommendItem(r, liveState) {
+    const gradeClass = `ai-grade-${r.grade || 'C'}`;
+    const signalClass = r.signal_type === 'buy' ? 'signal-buy' : r.signal_type === 'sell' ? 'signal-sell' : 'signal-hold';
+    const dimColors = { tech: '#58a6ff', fund: '#3fb950', sent: '#d29922' };
+    const fund = r.fund || {};
+    const marketTag = r.market && r.market !== 'a'
+        ? `<span class="ai-market-tag">${r.market_name || r.market.toUpperCase()}</span>` : '';
+    let rightCol;
+    if (liveState && liveState !== 'done') {
+        const badge = liveState === 'running'
+            ? '<span class="ai-live-badge running">⏳ 分析中</span>'
+            : '<span class="ai-live-badge pending">待分析</span>';
+        rightCol = `<div class="ai-rec-right">${badge}</div>`;
+    } else {
         const aiTag = r.ai_available ? 'AI深度解读' : '规则引擎解读';
-        const marketTag = r.market && r.market !== 'a'
-            ? `<span class="ai-market-tag">${r.market_name || r.market.toUpperCase()}</span>` : '';
-        return `<div class="ai-recommend-item" onclick="openAIAnalysis('${r.code}', '${r.name}', '${r.market || aiMarket || 'a'}')">
-            <div class="ai-score-badge ${gradeClass}">
-                ${r.comprehensive_score}
-                <small>${r.grade}级</small>
-            </div>
-            <div class="ai-rec-main">
-                <div class="ai-rec-name">${r.name}<span class="ai-rec-code">${r.code}</span>${marketTag}</div>
-                <div class="ai-dim-bars">
-                    <span class="ai-dim-bar">技
-                        <span class="ai-dim-track"><span class="ai-dim-fill" style="width:${r.scores.tech}%;background:${dimColors.tech};display:block;"></span></span>${r.scores.tech}
-                    </span>
-                    <span class="ai-dim-bar">基
-                        <span class="ai-dim-track"><span class="ai-dim-fill" style="width:${r.scores.fund}%;background:${dimColors.fund};display:block;"></span></span>${r.scores.fund}
-                    </span>
-                    <span class="ai-dim-bar">情
-                        <span class="ai-dim-track"><span class="ai-dim-fill" style="width:${r.scores.sent}%;background:${dimColors.sent};display:block;"></span></span>${r.scores.sent}
-                    </span>
-                </div>
-                ${fund.pe ? `<div class="ai-fund-info">PE ${fund.pe}${fund.pb ? ` | PB ${fund.pb}` : ''}${fund.total_mv ? ` | 市值${fund.total_mv}亿` : ''}${fund.turnover_rate ? ` | 换手${fund.turnover_rate}%` : ''}</div>` : ''}
-            </div>
-            <div class="ai-rec-right">
-                <div class="ai-rec-signal ${signalClass}">${r.signal}</div>
-                <span class="ai-rec-action">${aiTag} →</span>
-            </div>
+        rightCol = `<div class="ai-rec-right">
+            <div class="ai-rec-signal ${signalClass}">${r.signal}</div>
+            <span class="ai-rec-action">${aiTag} →</span>
         </div>`;
-    }).join('');
+    }
+    return `<div class="ai-recommend-item" onclick="openAIAnalysis('${r.code}', '${r.name}', '${r.market || aiMarket || 'a'}')">
+        <div class="ai-score-badge ${gradeClass}">
+            ${r.comprehensive_score}
+            <small>${r.grade}级</small>
+        </div>
+        <div class="ai-rec-main">
+            <div class="ai-rec-name">${r.name}<span class="ai-rec-code">${r.code}</span>${marketTag}</div>
+            <div class="ai-dim-bars">
+                <span class="ai-dim-bar">技
+                    <span class="ai-dim-track"><span class="ai-dim-fill" style="width:${r.scores.tech}%;background:${dimColors.tech};display:block;"></span></span>${r.scores.tech}
+                </span>
+                <span class="ai-dim-bar">基
+                    <span class="ai-dim-track"><span class="ai-dim-fill" style="width:${r.scores.fund}%;background:${dimColors.fund};display:block;"></span></span>${r.scores.fund}
+                </span>
+                <span class="ai-dim-bar">情
+                    <span class="ai-dim-track"><span class="ai-dim-fill" style="width:${r.scores.sent}%;background:${dimColors.sent};display:block;"></span></span>${r.scores.sent}
+                </span>
+            </div>
+            ${fund.pe ? `<div class="ai-fund-info">PE ${fund.pe}${fund.pb ? ` | PB ${fund.pb}` : ''}${fund.total_mv ? ` | 市值${fund.total_mv}亿` : ''}${fund.turnover_rate ? ` | 换手${fund.turnover_rate}%` : ''}</div>` : ''}
+        </div>
+        ${rightCol}
+    </div>`;
 }
 
 // ========== AI深度分析弹窗（快速评分 + 手动触发AI流式） ==========

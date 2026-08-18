@@ -928,6 +928,36 @@ main { padding: 20px 24px; max-width: 1600px; margin: 0 auto; }
 
 .ai-recommend-item:hover .ai-rec-action { opacity: 1; }
 
+/* AI扫描实时状态徽章 */
+.ai-live-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.ai-live-badge.pending {
+    color: var(--text-secondary);
+    background: rgba(128, 128, 128, 0.15);
+    border: 1px dashed rgba(128, 128, 128, 0.4);
+}
+.ai-live-badge.running {
+    color: #d29922;
+    background: rgba(210, 153, 34, 0.12);
+    border: 1px solid rgba(210, 153, 34, 0.5);
+    animation: ai-badge-pulse 1.2s ease-in-out infinite;
+}
+.ai-live-badge.done {
+    color: #3fb950;
+    background: rgba(63, 185, 80, 0.12);
+    border: 1px solid rgba(63, 185, 80, 0.5);
+}
+@keyframes ai-badge-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
 /* 快速AI分析池 */
 .ai-quick-pool {
     display: grid;
