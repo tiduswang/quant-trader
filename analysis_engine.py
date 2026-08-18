@@ -119,6 +119,14 @@ class AnalysisEngine:
         avg_vol = df['volume'].tail(20).mean()
         vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1
 
+        # 量能趋势：近5日均量 vs 之前15日均量
+        if len(df) >= 20:
+            prev_vol = df['volume'].iloc[-20:-5].mean()
+            vol_trend = 'increasing' if recent_vol > prev_vol * 1.1 else (
+                'decreasing' if recent_vol < prev_vol * 0.9 else 'stable')
+        else:
+            vol_trend = 'stable'
+
         # 量价关系
         last = df.iloc[-1]
         prev = df.iloc[-2]
@@ -138,7 +146,45 @@ class AnalysisEngine:
             'avg_vol_20': float(avg_vol),
             'recent_vol': float(recent_vol),
             'volume_ratio': round(float(vol_ratio), 2),
+            'vol_trend': vol_trend,
             'pattern': pattern
+        }
+
+    @staticmethod
+    def calc_risk_metrics(df):
+        """波动率与风险指标：ATR、近14日振幅、区间高低点"""
+        if len(df) < 15:
+            return {}
+        last = df.iloc[-1]
+        prev_close = df['close'].shift(1)
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - prev_close).abs(),
+            (df['low'] - prev_close).abs()
+        ], axis=1).max(axis=1)
+        atr14 = float(tr.tail(14).mean())
+        close = float(last['close'])
+
+        recent = df.tail(14)
+        amp = (recent['high'] - recent['low']) / prev_close.reindex(recent.index) * 100
+        amp = amp.dropna()
+        high14 = float(recent['high'].max())
+        low14 = float(recent['low'].min())
+        range_pct = (high14 - low14) / low14 * 100 if low14 > 0 else None
+        # 最大单日成交量（近14日）
+        max_vol_idx = recent['volume'].idxmax()
+
+        return {
+            'atr14': round(atr14, 2),
+            'atr_pct': round(atr14 / close * 100, 2) if close > 0 else None,
+            'amplitude_max': round(float(amp.max()), 2) if not amp.empty else None,
+            'amplitude_min': round(float(amp.min()), 2) if not amp.empty else None,
+            'high_14d': round(high14, 2),
+            'low_14d': round(low14, 2),
+            'range_pct_14d': round(range_pct, 2) if range_pct is not None else None,
+            'max_vol_date': df.loc[max_vol_idx, 'date'].strftime('%Y-%m-%d')
+                            if hasattr(df.loc[max_vol_idx, 'date'], 'strftime') else str(df.loc[max_vol_idx, 'date'])[:10],
+            'max_vol': float(recent['volume'].max())
         }
 
     @staticmethod
@@ -233,6 +279,9 @@ class AnalysisEngine:
         # 成交量
         vol_info = AnalysisEngine.analyze_volume(df)
 
+        # 波动率与风险指标
+        risk = AnalysisEngine.calc_risk_metrics(df)
+
         # 涨跌幅
         pct_change = float(last.get('pct_change', 0))
 
@@ -271,6 +320,7 @@ class AnalysisEngine:
             },
             'support_resistance': sr,
             'volume': vol_info,
+            'risk': risk,
             # K线数据用于前端绘图
             'kline_data': AnalysisEngine._format_kline(df)
         }

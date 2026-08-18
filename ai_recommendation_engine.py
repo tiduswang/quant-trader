@@ -143,7 +143,8 @@ class AIRecommendationEngine:
             lines.append(f"- 趋势: {t.get('trend', '-')}")
             lines.append(f"- MA5/MA10/MA20: {t.get('ma5', '-')} / {t.get('ma10', '-')} / {t.get('ma20', '-')}")
             if t.get('macd'):
-                lines.append(f"- MACD: {t['macd'].get('signal', '-')} (DIF={t['macd'].get('dif', '-')})")
+                lines.append(f"- MACD: {t['macd'].get('signal', '-')} (DIF={t['macd'].get('dif', '-')}, "
+                             f"DEA={t['macd'].get('dea', '-')}, 柱={t['macd'].get('macd', '-')})")
             if t.get('rsi'):
                 lines.append(f"- RSI6: {t['rsi'].get('rsi6', '-')} ({t['rsi'].get('signal', '-')})")
             if t.get('kdj'):
@@ -151,10 +152,24 @@ class AIRecommendationEngine:
             if t.get('boll'):
                 lines.append(f"- 布林带: {t['boll'].get('position', '-')} (上轨{t['boll'].get('upper', '-')} 中轨{t['boll'].get('mid', '-')} 下轨{t['boll'].get('lower', '-')})")
             if t.get('volume'):
-                lines.append(f"- 量比: {t['volume'].get('volume_ratio', '-')}，量价形态: {t['volume'].get('pattern', '-')}")
+                vol = t['volume']
+                lines.append(f"- 量比: {vol.get('volume_ratio', '-')}，量价形态: {vol.get('pattern', '-')}，"
+                             f"量能趋势: {vol.get('vol_trend', '-')}")
+            if t.get('risk'):
+                rk = t['risk']
+                if rk.get('atr14') is not None:
+                    lines.append(f"- 波动率: ATR14={rk['atr14']}（占现价{rk.get('atr_pct', '-')}%）")
+                if rk.get('amplitude_max') is not None:
+                    lines.append(f"- 近14日振幅: 最大{rk['amplitude_max']}% / 最小{rk['amplitude_min']}%")
+                if rk.get('high_14d') is not None:
+                    lines.append(f"- 近14日区间: 最高{rk['high_14d']} / 最低{rk['low_14d']}"
+                                 f"（区间幅度{rk.get('range_pct_14d', '-')}%），最大成交量日: {rk.get('max_vol_date', '-')}")
             if t.get('support_resistance'):
                 sr = t['support_resistance']
-                lines.append(f"- 支撑位: {sr.get('nearest_support', '-')}，压力位: {sr.get('nearest_resistance', '-')}")
+                sup = sr.get('support_levels') or []
+                res = sr.get('resistance_levels') or []
+                lines.append(f"- 压力位(由近到远): {res}，支撑位(由近到远): {sup}")
+                lines.append(f"- 近期最高/最低: {sr.get('recent_high', '-')} / {sr.get('recent_low', '-')}")
             if points.get('strategy'):
                 lines.append(f"- 规则引擎交易计划: {points['strategy']}")
             if tech.get('reasons_bull'):
@@ -201,14 +216,19 @@ class AIRecommendationEngine:
             lines.append("- 情绪数据获取失败")
 
         lines.append("")
-        lines.append("## 请输出")
-        lines.append("1. **综合研判**: 一段话总结当前股票的核心投资逻辑与多空判断")
-        lines.append("2. **操作建议**: 明确的买入/卖出/观望建议，说明理由")
-        lines.append("3. **价格区间**: 给出建议买入区间、目标价位、止损价位，并说明依据")
-        lines.append("4. **风险提示**: 列出主要风险点")
-        lines.append("5. **一句话总结**")
+        lines.append("## 请严格按以下结构输出深度分析")
+        lines.append("1. **趋势分析（支撑位与压力位）**: 先判断当前趋势性质（趋势延续/回调/反转，结合K线与均线说明依据）；"
+                     "列出强压力位（第一压力）、次压力位、强支撑位（第一支撑）、次支撑位，每个价位注明依据（前高/密集成交区/均线/整数关口等）")
+        lines.append("2. **成交量分析及其含义**: 量价特征（放量上涨/缩量回调等）、换手率与量能趋势的含义、变盘信号观察要点（放量突破/放量跌破的应对）")
+        lines.append("3. **风险评估（波动率分析）**: 依据ATR及占比、近14日振幅、RSI位置、该市场涨跌幅规则与近期涨幅，给出风险等级（低/中/高/极高）及理由")
+        lines.append("4. **短期和中期目标价位**: 短期（1-5个交易日）分乐观/中性/悲观三档目标价；中期（1-3个月）给出第一、第二目标价及条件")
+        lines.append("5. **关键技术位分析**: 用markdown表格列出：强压力/次压力/强弱分界线/关键支撑/止损位，每行含价格和依据")
+        lines.append("6. **具体交易建议（含止损位）**: 区分**持仓者**（激进策略/稳健策略）与**空仓者**（最佳买点及信号、突破买点及条件）；"
+                     "明确止损位及执行纪律；仓位控制（单笔亏损占总资金比例上限、该标的最大仓位占比）")
+        lines.append("7. **总结**: 一段话总结核心逻辑、关键价位与纪律要点")
         lines.append("")
-        lines.append("注意：请结合该市场交易规则给出建议。回答要简洁专业，控制在600字以内。")
+        lines.append("注意：请结合该市场交易规则与上述数据给出建议，价位须与提供的数据吻合（压力/支撑参考已列出的档位），"
+                     "不要凭空编造数据。输出使用markdown格式，全文控制在1200字以内。")
         return "\n".join(lines)
 
     def generate_rule_interpretation(self, code, name, tech, fund, sent, comp, market='a'):
